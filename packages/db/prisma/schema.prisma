@@ -1,0 +1,418 @@
+// SWMS Builder — data model.
+// Design notes:
+//  - Safety CONTENT (Hazard, ControlMeasure, PPEItem, SWMSTemplate,
+//    TemplateSection, Rule) is fully data-driven so admins can update it
+//    without a code deploy — see packages/rules-engine.
+//  - Join tables (JobHazard, JobPpe, TaskHazard, RuleHazard, RulePpe) carry
+//    a "source" flag where relevant so we can always answer "why is this
+//    hazard on this job" (rule-driven vs a human added it) for audit.
+//  - Every mutating action is expected to also write an AuditLog row from
+//    the API layer — this schema does not use DB triggers for audit, to
+//    keep the audit trail visible in application code and testable.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RoleName {
+  ADMIN
+  EDITOR
+  REVIEWER
+  WORKER
+}
+
+enum JobStatus {
+  DRAFT
+  SUBMITTED
+  IN_REVIEW
+  APPROVED
+  REJECTED
+  PUBLISHED
+  ARCHIVED
+}
+
+enum ApprovalDecision {
+  APPROVED
+  REJECTED
+  CHANGES_REQUESTED
+}
+
+enum RiskRating {
+  LOW
+  MEDIUM
+  HIGH
+  EXTREME
+}
+
+enum ControlHierarchy {
+  ELIMINATION
+  SUBSTITUTION
+  ISOLATION
+  ENGINEERING
+  ADMINISTRATIVE
+  PPE
+}
+
+enum ConditionLogic {
+  ALL
+  ANY
+}
+
+enum AuditAction {
+  JOB_CREATED
+  JOB_UPDATED
+  JOB_SUBMITTED
+  VERSION_GENERATED
+  APPROVAL_DECIDED
+  JOB_PUBLISHED
+  TEMPLATE_CREATED
+  TEMPLATE_UPDATED
+  RULE_CREATED
+  RULE_UPDATED
+  HAZARD_LIBRARY_UPDATED
+  USER_LOGIN
+}
+
+model Role {
+  id          String   @id @default(uuid())
+  name        RoleName @unique
+  description String?
+  createdAt   DateTime @default(now())
+
+  users User[]
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  roleId       String
+  role         Role     @relation(fields: [roleId], references: [id])
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  jobsCreated        Job[]         @relation("JobCreatedBy")
+  approvalsDecided   Approval[]    @relation("ApprovalDecidedBy")
+  auditLogs          AuditLog[]
+  versionsGenerated  SWMSVersion[] @relation("VersionGeneratedBy")
+  attachmentsUploaded Attachment[] @relation("AttachmentUploadedBy")
+
+  @@index([roleId])
+}
+
+/// Job type is a configurable lookup (not an enum) so admins can add new
+/// job types — and the rules engine keys off jobType.code — without a
+/// migration.
+model JobType {
+  id          String  @id @default(uuid())
+  code        String  @unique
+  name        String
+  description String?
+  isActive    Boolean @default(true)
+  createdAt   DateTime @default(now())
+
+  jobs Job[]
+}
+
+model Equipment {
+  id        String   @id @default(uuid())
+  code      String   @unique
+  name      String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  jobs JobEquipment[]
+}
+
+model JobEquipment {
+  jobId       String
+  equipmentId String
+  job         Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  equipment   Equipment @relation(fields: [equipmentId], references: [id])
+
+  @@id([jobId, equipmentId])
+}
+
+model Job {
+  id                  String    @id @default(uuid())
+  jobName             String
+  siteAddress         String
+  principalContractor String
+  workDescription     String
+  jobTypeId           String
+  jobType             JobType   @relation(fields: [jobTypeId], references: [id])
+  /// Shape validated against shared-types#jobEnvironmentSchema at the API
+  /// boundary; stored as JSON because environment flags are the primary
+  /// input the rules engine branches on and may grow over time.
+  environment         Json
+  status              JobStatus @default(DRAFT)
+  plannedStartDate    DateTime
+  plannedEndDate      DateTime
+  additionalNotes     String?
+  createdById         String
+  createdBy           User      @relation("JobCreatedBy", fields: [createdById], references: [id])
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  equipment   JobEquipment[]
+  tasks       Task[]
+  jobHazards  JobHazard[]
+  jobPpe      JobPpe[]
+  versions    SWMSVersion[]
+  approvals   Approval[]
+  auditLogs   AuditLog[]
+  attachments Attachment[]
+
+  @@index([status])
+  @@index([jobTypeId])
+}
+
+model Task {
+  id                     String  @id @default(uuid())
+  jobId                  String
+  job                    Job     @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  sequence               Int
+  description            String
+  additionalControlNotes String?
+
+  hazards TaskHazard[]
+
+  @@index([jobId])
+}
+
+model Hazard {
+  id                String     @id @default(uuid())
+  code              String     @unique
+  name              String
+  description       String?
+  category          String
+  defaultRiskRating RiskRating
+  isActive          Boolean    @default(true)
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  controlMeasures ControlMeasure[]
+  taskHazards     TaskHazard[]
+  jobHazards      JobHazard[]
+  ruleAddHazards  RuleHazard[]
+
+  @@index([category])
+}
+
+model TaskHazard {
+  taskId   String
+  hazardId String
+  task     Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  hazard   Hazard @relation(fields: [hazardId], references: [id])
+
+  @@id([taskId, hazardId])
+}
+
+model JobHazard {
+  jobId    String
+  hazardId String
+  /// "RULE" | "MANUAL" — lets the UI/audit explain why a hazard is present.
+  source   String
+  job      Job    @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  hazard   Hazard @relation(fields: [hazardId], references: [id])
+
+  @@id([jobId, hazardId])
+}
+
+model ControlMeasure {
+  id                 String           @id @default(uuid())
+  hazardId           String
+  hazard             Hazard           @relation(fields: [hazardId], references: [id], onDelete: Cascade)
+  description        String
+  hierarchy          ControlHierarchy
+  residualRiskRating RiskRating
+  isActive           Boolean          @default(true)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  @@index([hazardId])
+}
+
+model PPEItem {
+  id       String  @id @default(uuid())
+  code     String  @unique
+  name     String
+  iconKey  String?
+  isActive Boolean @default(true)
+
+  jobPpe     JobPpe[]
+  ruleAddPpe RulePpe[]
+}
+
+model JobPpe {
+  jobId  String
+  ppeId  String
+  source String // "RULE" | "MANUAL"
+  job    Job     @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  ppe    PPEItem @relation(fields: [ppeId], references: [id])
+
+  @@id([jobId, ppeId])
+}
+
+model Permit {
+  id       String  @id @default(uuid())
+  code     String  @unique
+  name     String
+  isActive Boolean @default(true)
+}
+
+model SWMSTemplate {
+  id              String   @id @default(uuid())
+  name            String
+  description     String?
+  /// Localization hook: "AU" today, state-specific (e.g. "AU-QLD") later
+  /// without a schema change.
+  jurisdiction    String   @default("AU")
+  docxStoragePath String
+  isActive        Boolean  @default(true)
+  version         Int      @default(1)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  sections     TemplateSection[]
+  rules        Rule[]
+  swmsVersions SWMSVersion[]
+}
+
+model TemplateSection {
+  id           String       @id @default(uuid())
+  templateId   String
+  template     SWMSTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  /// Stable identifier referenced by Rule.requiredSectionKeys.
+  key          String
+  title        String
+  isDefault    Boolean      @default(true)
+  sortOrder    Int          @default(0)
+  bodyMarkdown String?
+
+  @@unique([templateId, key])
+}
+
+/// A Rule is evaluated by packages/rules-engine against a job's resolved
+/// "facts" (job type, equipment, environment flags). Conditions are stored
+/// as JSON (shared-types#RuleCondition[]) — this is the mechanism that
+/// keeps branching logic out of application code.
+model Rule {
+  id                  String         @id @default(uuid())
+  name                String
+  description         String?
+  /// Lower evaluates first; used to break ties when multiple rules match
+  /// (e.g. a more specific rule should win template selection).
+  priority            Int            @default(100)
+  isActive            Boolean        @default(true)
+  conditions          Json
+  conditionLogic      ConditionLogic @default(ALL)
+  templateId          String?
+  template            SWMSTemplate?  @relation(fields: [templateId], references: [id])
+  requiredSectionKeys String[]       @default([])
+  addPermitCodes      String[]       @default([])
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  addHazards RuleHazard[]
+  addPpe     RulePpe[]
+
+  @@index([isActive, priority])
+}
+
+model RuleHazard {
+  ruleId   String
+  hazardId String
+  rule     Rule   @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  hazard   Hazard @relation(fields: [hazardId], references: [id])
+
+  @@id([ruleId, hazardId])
+}
+
+model RulePpe {
+  ruleId String
+  ppeId  String
+  rule   Rule    @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  ppe    PPEItem @relation(fields: [ppeId], references: [id])
+
+  @@id([ruleId, ppeId])
+}
+
+/// An immutable snapshot each time a document is (re)generated. Storing the
+/// fully-resolved JSON alongside the rendered files means a version can be
+/// audited or re-rendered later even if hazards/templates/rules change.
+model SWMSVersion {
+  id                String       @id @default(uuid())
+  jobId             String
+  job               Job          @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  versionNumber     Int
+  templateId        String
+  template          SWMSTemplate @relation(fields: [templateId], references: [id])
+  resolvedDataJson  Json
+  docxStoragePath   String
+  pdfStoragePath    String
+  generatedById     String
+  generatedBy       User         @relation("VersionGeneratedBy", fields: [generatedById], references: [id])
+  generatedAt       DateTime     @default(now())
+
+  approvals Approval[]
+
+  @@unique([jobId, versionNumber])
+}
+
+model Approval {
+  id          String           @id @default(uuid())
+  jobId       String
+  job         Job              @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  versionId   String
+  version     SWMSVersion      @relation(fields: [versionId], references: [id])
+  decision    ApprovalDecision
+  comment     String?
+  decidedById String
+  decidedBy   User             @relation("ApprovalDecidedBy", fields: [decidedById], references: [id])
+  decidedAt   DateTime         @default(now())
+
+  @@index([jobId])
+}
+
+model AuditLog {
+  id         String      @id @default(uuid())
+  action     AuditAction
+  entityType String
+  entityId   String
+  jobId      String?
+  job        Job?        @relation(fields: [jobId], references: [id])
+  userId     String
+  user       User        @relation(fields: [userId], references: [id])
+  /// Structured before/after or context — audit entries are never
+  /// free-text-only, so they stay queryable.
+  metadata   Json?
+  createdAt  DateTime    @default(now())
+
+  @@index([entityType, entityId])
+  @@index([jobId])
+  @@index([createdAt])
+}
+
+model Attachment {
+  id           String   @id @default(uuid())
+  jobId        String
+  job          Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  fileName     String
+  storagePath  String
+  mimeType     String
+  sizeBytes    Int
+  uploadedById String
+  uploadedBy   User     @relation("AttachmentUploadedBy", fields: [uploadedById], references: [id])
+  createdAt    DateTime @default(now())
+
+  @@index([jobId])
+}

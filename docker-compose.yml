@@ -1,0 +1,14 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: swms
+      POSTGRES_PASSWORD: swms_dev_password
+      POSTGRES_DB: swms_builder
+    ports:
+      - "5432:5432"
+    volumes:
+      - swms_postgres_data:/var/lib/postgresql/data
+
+volumes:
+  swms_postgres_data:

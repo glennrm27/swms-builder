@@ -1,0 +1,27 @@
+{
+  "name": "@swms/document-gen",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build-default-template": "tsx scripts/build-default-template.ts"
+  },
+  "dependencies": {
+    "@swms/shared-types": "workspace:*",
+    "docxtemplater": "^3.50.0",
+    "pizzip": "^3.1.7"
+  },
+  "optionalDependencies": {
+    "@azure/storage-blob": "^12.24.0"
+  },
+  "devDependencies": {
+    "docx": "^9.0.2",
+    "tsx": "^4.16.5",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
+  }
+}

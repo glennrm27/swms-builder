@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+    // This is an application, not a library other packages import — no
+    // .d.ts output needed, and turning it off avoids TS2742 "cannot be
+    // named" errors from pnpm's strict node_modules layout on inferred
+    // Express Router types.
+    "declaration": false,
+    "declarationMap": false
+  },
+  "include": ["src"]
+}

@@ -1,0 +1,23 @@
+{
+  "name": "swms-builder",
+  "private": true,
+  "version": "0.1.0",
+  "description": "SWMS Builder - guided Safe Work Method Statement authoring, rules-driven template selection, and DOCX/PDF generation.",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "packageManager": "pnpm@9.0.0",
+  "scripts": {
+    "dev:api": "pnpm --filter @swms/api dev",
+    "dev:web": "pnpm --filter @swms/web dev",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint",
+    "db:generate": "pnpm --filter @swms/db generate",
+    "db:migrate": "pnpm --filter @swms/db migrate",
+    "db:seed": "pnpm --filter @swms/db seed"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  }
+}
