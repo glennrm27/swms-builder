@@ -154,11 +154,14 @@ inside Linux containers) before being wired into this blueprint.
    it is safe and a no-op if rules already exist, but there's no reason to run it more than once.)
 5. Visit `swms-web`'s URL and sign in with the seeded admin account.
 
-**Free-tier caveats** (see comments in `render.yaml`): free web services spin down after ~15 min idle (first
-request after that takes 30-60s to wake up), free Postgres is time-limited, and there's no persistent disk
-on the free plan — generated documents live on the container's ephemeral filesystem and are lost on
-redeploy/restart. Fine for someone to try the guided form and download a SWMS in one sitting; upgrade the
-`swms-api` plan and add a `disk:` block in `render.yaml` if documents need to survive restarts.
+`render.yaml` defaults both services to the free plan. On **Starter** (or above) — which is what's
+currently deployed — services don't spin down on idle, so skip the "waking up" wait the free tier has.
+Storage is still ephemeral either way: without a `disk:` block, generated documents live on the container's
+filesystem and are lost on redeploy/restart. Fine for trying the guided form and downloading a SWMS in one
+sitting; add a `disk:` block under `swms-api` in `render.yaml` (Starter+ supports persistent disks) if
+documents need to survive restarts — not done yet on the current deployment, by choice.
+
+**Currently deployed at:** `swms-web-6sgh.onrender.com` (API: `swms-api-fiae.onrender.com`).
 
 ## Deploying to Azure (production target)
 
