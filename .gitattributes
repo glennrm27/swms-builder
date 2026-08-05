@@ -1,0 +1,5 @@
+# Shell scripts run inside Linux containers — force LF regardless of a
+# contributor's local git autocrlf setting, since a CRLF shebang line
+# breaks `/bin/sh` execution.
+*.sh text eol=lf
+Dockerfile text eol=lf

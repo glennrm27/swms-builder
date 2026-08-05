@@ -6,7 +6,7 @@
   "engines": {
     "node": ">=20.0.0"
   },
-  "packageManager": "pnpm@9.0.0",
+  "packageManager": "pnpm@8.15.9",
   "scripts": {
     "dev:api": "pnpm --filter @swms/api dev",
     "dev:web": "pnpm --filter @swms/web dev",

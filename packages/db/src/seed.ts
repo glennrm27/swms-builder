@@ -180,6 +180,19 @@ async function main() {
     skipDuplicates: true,
   });
 
+  // Rules don't have a natural unique key to upsert on (unlike everything
+  // above), so guard the whole block instead — this keeps `seed` safe to
+  // run more than once (e.g. as an idempotent step in a deploy pipeline)
+  // without piling up duplicate rules on every run.
+  if ((await prisma.rule.count()) > 0) {
+    console.log("Rules already seeded, skipping.");
+    void electricalWork;
+    void generalConstruction;
+    void eleveatedWorkPlatform;
+    console.log("Seed complete.");
+    return;
+  }
+
   console.log("Seeding rules...");
   // Rule 1: any job of type ELECTRICAL, or with environment.electricalWork
   // true, must use the general template, gain the electric-shock hazard +

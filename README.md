@@ -80,15 +80,31 @@ deployment — it's seed data, not a default you should ship).
 ## Testing
 
 ```bash
-pnpm -r test
+pnpm -r test                                    # unit tests, no Docker needed
+pnpm --filter @swms/api test:integration        # HTTP integration tests, needs Docker
 ```
 
-Runs unit tests for the rules engine (condition evaluation, template resolution, priority tie-breaking),
-document generation (DOCX merge against the real generated template, verifying no unresolved tags remain),
-shared Zod schemas (client/server validation contract), and API middleware/lib code (JWT, password hashing,
-error mapping, request validation) — all without needing a live database. Full HTTP-integration tests
-against a real Postgres instance are a natural next addition (e.g. via `testcontainers`) but are not
-included here.
+`pnpm -r test` runs unit tests for the rules engine (condition evaluation including nested AND/OR groups,
+template resolution, priority tie-breaking), document generation (DOCX merge against the real generated
+template, verifying no unresolved tags remain), shared Zod schemas (the client/server validation contract),
+and API middleware/lib code (JWT, password hashing, error mapping, request validation) — all without
+needing a live database.
+
+`test:integration` (`apps/api/src/integration/`) spins up a real Postgres in a Docker container via
+[testcontainers](https://node.testcontainers.org/), runs the real migrations against it, and exercises the
+real Express app over HTTP with supertest — auth, role enforcement, job creation with live rules-engine
+resolution, job editing re-running the rules engine, admin CRUD, and the audit trail. Submit/approve/publish
+assertions additionally require LibreOffice on the runner (`SOFFICE_PATH` env var); if it's not present they
+skip to asserting the failure path instead (job stays `DRAFT`) rather than failing outright, so the suite
+still runs meaningfully in environments without LibreOffice installed.
+
+> Note from developing this on Windows: the full suite (11/13, 2 correctly skipped) passed reliably without
+> LibreOffice. With `SOFFICE_PATH` set, the run intermittently hung on this particular sandboxed dev
+> machine — while the same `convertDocxToPdf` call, run standalone (not under testcontainers/vitest) and
+> inside the actual Docker container, both completed correctly and quickly every time. That strongly points
+> to a Windows-specific interaction between concurrent Docker Desktop containers, the spawned `vitest`
+> process tree, and LibreOffice rather than a bug in the conversion code — worth a closer look if it recurs
+> in CI, but not something to block on for a Linux-based CI runner.
 
 ## Roles
 
@@ -114,16 +130,45 @@ trusting whatever was resolved at intake — if hazards or rules changed between
 generated document reflects current safety content, and if generation fails partway (e.g. PDF conversion
 error), the job stays `DRAFT` and is safely re-submittable rather than getting stuck in an in-between state.
 
-## Deploying to Azure
+## Live demo deployment (Render)
 
-This is designed to map directly onto:
+`render.yaml` is a ready-to-use [Render Blueprint](https://render.com/docs/blueprint-spec) that stands up a
+throwaway test instance — a managed Postgres, the API (Docker, with LibreOffice baked in), and the web app
+(Docker) — so someone can try the app at a URL without installing anything locally. Both Dockerfiles are
+verified working end to end (built, run, logged in, created a job, and generated a real DOCX+PDF, all
+inside Linux containers) before being wired into this blueprint.
+
+1. Push this repo to your own GitHub account (already done if you're reading this on GitHub).
+2. In the Render dashboard: **New > Blueprint**, connect the repo, and Render will read `render.yaml` and
+   propose the `swms-postgres` database plus the `swms-api` and `swms-web` services. Apply it.
+3. First deploy will fail to *fully* wire up until you fix the chicken-and-egg URL problem: Render doesn't
+   know either service's public URL until after it's created.
+   - Once both services are up, copy `swms-api`'s actual URL (Dashboard → swms-api → the URL at the top)
+     and set it as `swms-web`'s `NEXT_PUBLIC_API_URL` env var, then **Manual Deploy** swms-web (this is a
+     Next.js build-time value, so it needs a rebuild, not just a restart).
+   - Copy `swms-web`'s actual URL and set it as `swms-api`'s `WEB_ORIGIN` env var (this one just needs a
+     restart — CORS config is read at boot, not build time).
+4. Seed reference data once, via Render's Shell tab on `swms-api`: `cd /app/packages/db && pnpm seed`.
+   (Migrations and the default template run automatically on every boot — see
+   `apps/api/docker-entrypoint.sh` — but seeding rules/hazards/PPE is a deliberate one-time step; rerunning
+   it is safe and a no-op if rules already exist, but there's no reason to run it more than once.)
+5. Visit `swms-web`'s URL and sign in with the seeded admin account.
+
+**Free-tier caveats** (see comments in `render.yaml`): free web services spin down after ~15 min idle (first
+request after that takes 30-60s to wake up), free Postgres is time-limited, and there's no persistent disk
+on the free plan — generated documents live on the container's ephemeral filesystem and are lost on
+redeploy/restart. Fine for someone to try the guided form and download a SWMS in one sitting; upgrade the
+`swms-api` plan and add a `disk:` block in `render.yaml` if documents need to survive restarts.
+
+## Deploying to Azure (production target)
+
+Render above is for quick test access; this is the intended production path:
 
 - **apps/web** → Azure Static Web Apps or an Azure App Service (Node) running `next start`
-- **apps/api** → Azure App Service or Container Apps (Node). Build a container image based on a Node image
-  with LibreOffice installed (e.g. `apt-get install -y libreoffice --no-install-recommends`) so PDF
-  conversion works in production the same way it does in dev.
+- **apps/api** → Azure App Service or Container Apps, using `apps/api/Dockerfile` as-is (it already
+  installs LibreOffice and has been verified to run correctly in a Linux container).
 - **Database** → Azure Database for PostgreSQL – Flexible Server. Run `prisma migrate deploy` (not
-  `migrate dev`) as a release step.
+  `migrate dev`) as a release step — `apps/api/docker-entrypoint.sh` already does this on every boot.
 - **File storage** → Azure Blob Storage. Set `STORAGE_DRIVER=azure`, `AZURE_STORAGE_CONNECTION_STRING`,
   `AZURE_STORAGE_CONTAINER` — `packages/document-gen/src/storage.ts` already implements this driver
   (`@azure/storage-blob` is an optional dependency, loaded dynamically so local dev never needs it
@@ -133,13 +178,15 @@ This is designed to map directly onto:
 
 ## Known limitations / natural next steps
 
-- **PDF conversion requires LibreOffice** on the host or container. This was deliberately not simulated in
-  this environment beyond confirming the failure path degrades safely (job stays `DRAFT`, clear error
-  surfaced) — see `packages/document-gen/src/pdfConvert.ts`.
+- **Concurrent PDF conversions need an isolated LibreOffice profile per call** — without this, two people
+  submitting SWMS jobs at the same moment would contend for one shared profile lock and one request could
+  hang instead of failing fast. `packages/document-gen/src/pdfConvert.ts` already does this
+  (`-env:UserInstallation` per invocation) plus a hard timeout, found and fixed during testing in this repo.
 - **Single role per user.** Simpler than a many-to-many role model and matches the four roles requested;
   revisit if a user genuinely needs to act as more than one role.
-- **No HTTP-level integration tests against a live database** yet (unit tests cover the business logic in
-  isolation instead) — recommended next addition via `testcontainers` in CI.
-- **Admin screens are functional but minimal** (e.g. the rule condition builder is a flat list of
-  field/operator/value rows, not a nested condition tree) — sufficient for the conditions in the seed data;
-  extend `apps/web/src/app/admin/rules/page.tsx` if nested AND/OR groups are needed later.
+- **Admin screens are functional but minimal.** The rule condition builder supports nested AND/OR groups
+  (see `apps/web/src/components/RuleForm/ConditionGroupEditor.tsx`), but there's no template-section editor
+  UI yet (sections are seeded/managed via the API directly) and no bulk hazard-library import/export.
+- **No CI pipeline configured** — `pnpm -r test` (fast, no Docker) and
+  `pnpm --filter @swms/api test:integration` (needs Docker) both run cleanly locally; wiring them into
+  GitHub Actions on push/PR is the natural next step before treating `main` as protected.

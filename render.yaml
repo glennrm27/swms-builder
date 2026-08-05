@@ -1,0 +1,67 @@
+# Render Blueprint — deploys a demo/test instance of SWMS Builder.
+# See README.md "Live demo deployment (Render)" for the full walkthrough.
+#
+# Free-tier notes (adjust `plan:` below if you upgrade):
+#  - Free web services spin down after ~15 min idle; the first request
+#    after that takes 30-60s to wake up.
+#  - Free Postgres instances on Render are time-limited — check Render's
+#    current pricing page. Fine for a test deploy, not for anything
+#    long-lived.
+#  - Persistent Disks require a paid instance type, so this blueprint
+#    does NOT attach one: generated documents and any uploaded templates
+#    live on the container's ephemeral filesystem and are lost on
+#    redeploy/restart. Good enough to try the guided form and download a
+#    SWMS in the same session; upgrade api's plan and add a `disk:` block
+#    if you need documents to survive restarts.
+
+databases:
+  - name: swms-postgres
+    plan: free
+    databaseName: swms_builder
+    user: swms
+
+services:
+  - type: web
+    name: swms-api
+    runtime: docker
+    dockerfilePath: ./apps/api/Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: swms-postgres
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 8h
+      - key: STORAGE_DRIVER
+        value: local
+      - key: LOCAL_STORAGE_DIR
+        value: /app/apps/api/storage
+      - key: SOFFICE_PATH
+        value: soffice
+      - key: PORT
+        value: 4000
+      # Render only knows the web service's public URL after it's created,
+      # which creates a chicken-and-egg problem in a blueprint. Deploy
+      # first, then update this to the actual swms-web URL Render assigns
+      # (Dashboard -> swms-api -> Environment) and redeploy — see README.
+      - key: WEB_ORIGIN
+        value: https://swms-web.onrender.com
+
+  - type: web
+    name: swms-web
+    runtime: docker
+    dockerfilePath: ./apps/web/Dockerfile
+    dockerContext: .
+    plan: free
+    envVars:
+      # Same chicken-and-egg note as WEB_ORIGIN above, in reverse — update
+      # this to the actual swms-api URL after first deploy. Because this
+      # is a Next.js build-time value (baked into the client bundle), a
+      # change here requires a rebuild, not just a restart.
+      - key: NEXT_PUBLIC_API_URL
+        value: https://swms-api.onrender.com
